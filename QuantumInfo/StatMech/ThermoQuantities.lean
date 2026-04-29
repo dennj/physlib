@@ -86,14 +86,15 @@ is, aka if the Laplace transform is differentiable.
 See e.g. https://math.stackexchange.com/q/84382/127777
 For this we really want the fact that the Laplace transform is analytic wherever it's absolutely convergent,
 which is (as Wikipedia informs) an easy consequence of Fubini's theorem + Morera's theorem. However, Morera's
-theorem isn't in mathlib yet. So this is a sorry for now
+theorem isn't in mathlib yet, so we expose this smoothness as an explicit hypothesis in the downstream
+thermodynamic identities instead of claiming it from `ZIntegrable` alone.
 -/
 open scoped ContDiff in
-theorem DifferentiableAt_Z_if_ZIntegrable {β : ℝ} (h : H.ZIntegrable d β) : ContDiffAt ℝ ω (H.PartitionZ d) β :=
-  sorry
+abbrev ZSmoothAt (β : ℝ) : Prop := ContDiffAt ℝ ω (H.PartitionZ d) β
 
 /-- The two definitions of entropy, in terms of T or β, are equivalent. -/
 theorem entropy_A_eq_entropy_Z (T β : ℝ) (hβT : T * β = 1) (hi : H.ZIntegrable d β)
+    (hZ : ZSmoothAt (H := H) (d := d) β)
     : EntropyS H d T = EntropySβ H d β := by
   have hTnz : T ≠ 0 := left_ne_zero_of_mul_eq_one hβT
   have hβnz : β ≠ 0 := right_ne_zero_of_mul_eq_one hβT
@@ -113,14 +114,15 @@ theorem entropy_A_eq_entropy_Z (T β : ℝ) (hβT : T * β = 1) (hi : H.ZIntegra
   --Show the differentiability side-goals
   · rw [← one_div, ← hβT']
     have h₁ := hi.2
-    have := (DifferentiableAt_Z_if_ZIntegrable hi).differentiableAt WithTop.top_ne_zero
+    have := hZ.differentiableAt (by simp)
     fun_prop (disch := assumption)
   · fun_prop (disch := assumption)
   · fun_prop
   · simp_rw [PartitionZT]
     rw [hβT'] at hi
+    rw [hβT'] at hZ
     have := hi.2
-    have := (DifferentiableAt_Z_if_ZIntegrable hi).differentiableAt WithTop.top_ne_zero
+    have := hZ.differentiableAt (by simp)
     fun_prop (disch := assumption)
 
 set_option backward.isDefEq.respectTransparency false in
@@ -129,22 +131,33 @@ The "definition of temperature from entropy":
 1/T = (∂S/∂U), when the derivative is at constant extrinsic d (typically N/V).
 Here we use β instead of 1/T on the left, and express the right actually as (∂S/∂β)/(∂U/∂β),
 as all our things are ultimately parameterized by β.
+
+This identity requires the denominator `∂U/∂β` to be nonzero.
 -/
-theorem β_eq_deriv_S_U {β : ℝ} (hi : H.ZIntegrable d β) : β = (deriv (H.EntropySβ d) β) / deriv (H.InternalU d) β := by
+theorem β_eq_deriv_S_U {β : ℝ} (hi : H.ZIntegrable d β)
+    (hZ : ZSmoothAt (H := H) (d := d) β)
+    (hU' : deriv (H.InternalU d) β ≠ 0) :
+    β = (deriv (H.EntropySβ d) β) / deriv (H.InternalU d) β := by
   unfold EntropySβ
   unfold InternalU
 
   --Show the differentiability side-goals
-  have : DifferentiableAt ℝ (fun β => Real.log (H.PartitionZ d β)) β := by
+  have hlogDiff : DifferentiableAt ℝ (fun β => Real.log (H.PartitionZ d β)) β := by
     have := hi.2
-    have := (DifferentiableAt_Z_if_ZIntegrable hi).differentiableAt WithTop.top_ne_zero
+    have := hZ.differentiableAt (by simp)
     fun_prop (disch := assumption)
-  have : DifferentiableAt ℝ (deriv fun β => Real.log (H.PartitionZ d β)) β := by
-    have this := (DifferentiableAt_Z_if_ZIntegrable hi).log hi.2
+  have hlogDerivDiff : DifferentiableAt ℝ (deriv fun β => Real.log (H.PartitionZ d β)) β := by
+    have this := hZ.log hi.2
     replace this :=
-      (this.fderiv_right (m := ⊤) (OrderTop.le_top _)).differentiableAt WithTop.top_ne_zero
+      (this.fderiv_right (m := ⊤) (OrderTop.le_top _)).differentiableAt (by simp)
     unfold deriv
     fun_prop
+  have hderiv : deriv (deriv fun β => Real.log (H.PartitionZ d β)) β ≠ 0 := by
+    intro hzero
+    apply hU'
+    change deriv (-fun β => deriv (fun β' => Real.log (H.PartitionZ d β')) β) β = 0
+    rw [deriv.neg]
+    simp [hzero]
 
   --Main goal
   simp only [mul_neg]
@@ -152,19 +165,17 @@ theorem β_eq_deriv_S_U {β : ℝ} (hi : H.ZIntegrable d β) : β = (deriv (H.En
   dsimp
   erw [deriv_mul]
   simp only [deriv_id'', one_mul, neg_add_rev, add_neg_cancel_comm_assoc, neg_div_neg_eq]
-  have : deriv (deriv fun β => Real.log (H.PartitionZ d β)) β ≠ 0 := ?_
-  exact (mul_div_cancel_right₀ β this).symm
+  exact (mul_div_cancel_right₀ β hderiv).symm
   --Discharge those side-goals
-  · sorry
-  · fun_prop (disch := assumption)
-  · fun_prop (disch := assumption)
+  · exact differentiableAt_id
+  · exact hlogDerivDiff
   · fun_prop (disch := assumption)
   · fun_prop (disch := assumption)
 
 set_option backward.isDefEq.respectTransparency false in
 open scoped ContDiff in
 example (x : ℝ) (f : ℝ → ℝ) (hf : ContDiffAt ℝ ω f x) : DifferentiableAt ℝ (deriv f) x := by
-  have := (hf.fderiv_right (m := ⊤) (OrderTop.le_top _)).differentiableAt WithTop.top_ne_zero
+  have := (hf.fderiv_right (m := ⊤) (OrderTop.le_top _)).differentiableAt (by simp)
   unfold deriv
   fun_prop
 

@@ -6,6 +6,9 @@ Authors: Alex Meiburg
 module
 
 public import QuantumInfo.ClassicalInfo.Entropy
+public import Mathlib.Algebra.BigOperators.Group.List.Basic
+public import Mathlib.Data.List.Flatten
+public import Mathlib.Data.List.OfFn
 public import Mathlib.Data.Finset.Fin
 public import Mathlib.Data.Fintype.Fin
 
@@ -17,6 +20,48 @@ public import Mathlib.Data.Fintype.Fin
 -- * Prove Shannon's capacity theorems
 
 variable (A I O : Type*)
+
+private lemma blockIndexLt (len block_in : ℕ) (hmod : len % block_in = 0)
+    (i : Fin (len / block_in)) (j : Fin block_in) :
+    i.1 * block_in + j.1 < len := by
+  have hlen : block_in * (len / block_in) = len := by
+    simpa [hmod] using (Nat.mod_add_div len block_in)
+  have hi : i.1 + 1 ≤ len / block_in := Nat.succ_le_of_lt i.2
+  have hmul : (i.1 + 1) * block_in ≤ len := by
+    calc
+      (i.1 + 1) * block_in ≤ (len / block_in) * block_in := Nat.mul_le_mul_right _ hi
+      _ = len := by simpa [Nat.mul_comm] using hlen
+  calc
+    i.1 * block_in + j.1 < i.1 * block_in + block_in := Nat.add_lt_add_left j.2 _
+    _ = (i.1 + 1) * block_in := by rw [Nat.succ_mul]
+    _ ≤ len := hmul
+
+private def mapBlocks {α β : Type*} (block_in block_out : ℕ)
+    (f : (Fin block_in → α) → (Fin block_out → β)) (xs : List α) : List β :=
+  if hmod : xs.length % block_in = 0 then
+    let block : Fin (xs.length / block_in) → List β := fun i =>
+      List.ofFn <| f fun j =>
+        xs[i.1 * block_in + j.1]'(blockIndexLt xs.length block_in hmod i j)
+    List.flatten <| List.ofFn block
+  else
+    []
+
+private theorem mapBlocks_length {α β : Type*} (block_in block_out : ℕ)
+    (f : (Fin block_in → α) → (Fin block_out → β)) (xs : List α) :
+    (mapBlocks block_in block_out f xs).length =
+      if xs.length % block_in = 0 then (xs.length / block_in) * block_out else 0 := by
+  by_cases hmod : xs.length % block_in = 0
+  · simp [mapBlocks, hmod, List.length_flatten]
+    let block : Fin (xs.length / block_in) → List β := fun i =>
+      List.ofFn <| f fun j =>
+        xs[i.1 * block_in + j.1]'(blockIndexLt xs.length block_in hmod i j)
+    have hf : List.length ∘ block = fun _ => block_out := by
+      funext i
+      simp [block]
+    rw [show List.ofFn (List.length ∘ block) = List.ofFn (fun _ : Fin (xs.length / block_in) => block_out) by rw [hf]]
+    rw [List.ofFn_const, List.sum_replicate, nsmul_eq_mul]
+    simp
+  · simp [mapBlocks, hmod]
 
 /-- Here we define a *Code* by an encdoder and a decoder. The encoder is a function that takes
  strings (`List`s) of any length over an alphabet `A`, and returns strings over `I`;
@@ -52,9 +97,15 @@ structure BlockCode (io : I → O) extends FixedLengthCode A I O where
   block_enc_dec_inv : ∀ as, block_dec (io ∘ (block_enc as)) = as
   enc_length na := if na % block_in != 0 then 0 else (na / block_in) * block_out
   dec_length no := if no % block_out != 0 then 0 else (no / block_out) * block_in
-  encoder as := if as.length % block_in != 0 then [] else
-    sorry
-  decoder os := if os.length % block_out != 0 then [] else
-    sorry
-  enc_maps_length := sorry
-  dec_maps_length := sorry
+  encoder := mapBlocks block_in block_out block_enc
+  decoder := mapBlocks block_out block_in block_dec
+  enc_maps_length := by
+    intro as
+    by_cases hmod : as.length % block_in = 0
+    · simpa [mapBlocks_length, hmod]
+    · simpa [mapBlocks_length, hmod]
+  dec_maps_length := by
+    intro os
+    by_cases hmod : os.length % block_out = 0
+    · simpa [mapBlocks_length, hmod]
+    · simpa [mapBlocks_length, hmod]

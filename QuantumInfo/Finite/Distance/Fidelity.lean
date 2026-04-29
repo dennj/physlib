@@ -14,7 +14,7 @@ noncomputable section
 open BigOperators
 open ComplexConjugate
 open Kronecker
-open scoped Matrix ComplexOrder
+open scoped Matrix ComplexOrder RealInnerProductSpace InnerProductSpace
 
 variable {d d₂ : Type*} [Fintype d] [DecidableEq d] [Fintype d₂] (ρ σ : MState d)
 
@@ -66,10 +66,73 @@ theorem fidelity_self_eq_one : fidelity ρ ρ = 1 := by
   rw [← Real.rpow_two, Real.rpow_inv_rpow hx (by norm_num), ← sq, ← Real.rpow_two]
   exact Real.rpow_rpow_inv hx (by norm_num)
 
+/-- Fidelity can be rewritten as the trace norm of the product of square roots. -/
+theorem fidelity_eq_traceNorm_sqrt_mul_sqrt (ρ σ : MState d) :
+    fidelity ρ σ = (σ.M.sqrt.mat * ρ.M.sqrt.mat).traceNorm := by
+  let X : Matrix d d ℂ := σ.M.sqrt.mat * ρ.M.sqrt.mat
+  have hInside : Xᴴ * X = (σ.M.conj ρ.M.sqrt.mat).mat := by
+    dsimp [X]
+    simp [HermitianMat.conj_apply_mat, HermitianMat.conjTranspose_mat, Matrix.conjTranspose_mul,
+      Matrix.mul_assoc, (HermitianMat.sqrt_sq σ.nonneg).symm]
+  open MatrixOrder in
+  have hPSD : 0 ≤ (σ.M.conj ρ.M.sqrt.mat).mat := by positivity
+  open MatrixOrder in
+  rw [fidelity, HermitianMat.sqrt_eq_cfc_rpow_half, HermitianMat.trace_eq_re_trace,
+    Matrix.traceNorm, CFC.sqrt_eq_rpow]
+  change RCLike.re (((σ.M.conj ρ.M.sqrt.mat) ^ (1 / 2 : ℝ)).mat.trace) =
+    RCLike.re ((Xᴴ * X) ^ (1 / 2 : ℝ)).trace
+  rw [show ((σ.M.conj ρ.M.sqrt.mat) ^ (1 / 2 : ℝ)).mat = ((σ.M.conj ρ.M.sqrt.mat).mat) ^ (1 / 2 : ℝ) by
+    rw [HermitianMat.rpow_eq_cfc, HermitianMat.mat_cfc, CFC.rpow_eq_cfc_real (ha := hPSD)]]
+  rw [hInside]
+
 /-- The fidelity is 1 if and only if the two states are the same. -/
-theorem fidelity_eq_one_iff_self : fidelity ρ σ = 1 ↔ ρ = σ :=
-  ⟨by sorry,
-  fun h ↦ h ▸ fidelity_self_eq_one ρ⟩
+theorem fidelity_eq_one_iff_self : fidelity ρ σ = 1 ↔ ρ = σ := by
+  constructor
+  · intro h
+    let A : Matrix d d ℂ := ρ.M.sqrt.mat
+    let B : Matrix d d ℂ := σ.M.sqrt.mat
+    let X : Matrix d d ℂ := B * A
+    have hX : X.traceNorm = 1 := by
+      simpa [X, A, B] using (fidelity_eq_traceNorm_sqrt_mul_sqrt ρ σ).symm.trans h
+    obtain ⟨U, hU⟩ := (Matrix.traceNorm_eq_max_re_tr_U X).left
+    have hUeq : RCLike.re ((U.1 * X).trace) = 1 := by simpa [hX] using hU
+    have hAherm : Matrix.conjTranspose A = A := by
+      change Matrix.conjTranspose ρ.M.sqrt.mat = ρ.M.sqrt.mat; exact HermitianMat.conjTranspose_mat _
+    have hBherm : Matrix.conjTranspose B = B := by
+      change Matrix.conjTranspose σ.M.sqrt.mat = σ.M.sqrt.mat; exact HermitianMat.conjTranspose_mat _
+    have hAeq : ρ.m = Matrix.conjTranspose A * A := by
+      change ρ.M.mat = _; rw [hAherm]; exact (HermitianMat.sqrt_sq ρ.nonneg).symm
+    have hBeq : σ.m = Matrix.conjTranspose B * B := by
+      change σ.M.mat = _; rw [hBherm]; exact (HermitianMat.sqrt_sq σ.nonneg).symm
+    have hUB : Matrix.conjTranspose (U.1 * B) * (U.1 * B) = Matrix.conjTranspose B * B := by
+      rw [Matrix.conjTranspose_mul, Matrix.mul_assoc]
+      simp [show Matrix.conjTranspose U.1 = star U.1 from rfl, ← Matrix.mul_assoc, U.2.1]
+    let z : ℂ := (U.1 * X).trace
+    have hz1 : (Matrix.conjTranspose A * (U.1 * B)).trace = z := by
+      dsimp [z, X]; rw [hAherm, ← Matrix.mul_assoc, Matrix.trace_mul_cycle, Matrix.trace_mul_comm]
+    have hz2 : (Matrix.conjTranspose (U.1 * B) * A).trace = conj z := by
+      calc (Matrix.conjTranspose (U.1 * B) * A).trace
+          = (Matrix.conjTranspose (Matrix.conjTranspose A * (U.1 * B))).trace := by
+              simp [Matrix.conjTranspose_mul, hAherm, hBherm]
+        _ = conj z := by simpa [hz1] using Matrix.trace_conjTranspose (Matrix.conjTranspose A * (U.1 * B))
+    have htraceM : (Matrix.conjTranspose (A - U.1 * B) * (A - U.1 * B)).trace = 0 := by
+      have h_expand : (Matrix.conjTranspose (A - U.1 * B) * (A - U.1 * B)).trace =
+          (Matrix.conjTranspose A * A).trace - (Matrix.conjTranspose A * (U.1 * B)).trace
+            - (Matrix.conjTranspose (U.1 * B) * A).trace
+            + (Matrix.conjTranspose (U.1 * B) * (U.1 * B)).trace := by
+        simp [sub_eq_add_neg, Matrix.conjTranspose_mul, Matrix.mul_add, Matrix.add_mul,
+          Matrix.trace_add, Matrix.trace_neg, add_assoc, add_left_comm, add_comm]
+      rw [h_expand, hz1, hz2, ← hAeq, ρ.tr', hUB, ← hBeq, σ.tr']
+      have : z + conj z = 2 := by rw [RCLike.add_conj, hUeq]; push_cast; ring
+      linear_combination -this
+    have hAU : A = U.1 * B :=
+      sub_eq_zero.mp (Matrix.trace_conjTranspose_mul_self_eq_zero_iff.mp htraceM)
+    apply MState.ext_m
+    calc ρ.m = Matrix.conjTranspose A * A := hAeq
+      _ = Matrix.conjTranspose (U.1 * B) * (U.1 * B) := by rw [hAU]
+      _ = Matrix.conjTranspose B * B := hUB
+      _ = σ.m := hBeq.symm
+  · rintro rfl; exact fidelity_self_eq_one ρ
 
 /-- The fidelity is a symmetric quantity. -/
 theorem fidelity_symm : fidelity ρ σ = fidelity σ ρ := by

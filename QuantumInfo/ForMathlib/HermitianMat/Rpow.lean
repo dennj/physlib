@@ -6,6 +6,7 @@ Authors: Alex Meiburg
 module
 
 public import QuantumInfo.ForMathlib.HermitianMat.LogExp
+public import QuantumInfo.ForMathlib.Majorization
 public import QuantumInfo.ForMathlib.HermitianMat.Sqrt
 public import QuantumInfo.ForMathlib.HermitianMat.Unitary
 public import Mathlib.Analysis.SpecialFunctions.Integrability.Basic
@@ -674,15 +675,503 @@ end LoewnerHeinz
 section ArakiLiebThirring
 
 variable {A B : HermitianMat d ℂ} {q r : ℝ}
+open ComplexOrder MatrixOrder
+open scoped AllOrdered
+
+private def compoundHermitian (A : HermitianMat d ℂ) (k : ℕ) :
+    HermitianMat {S : Finset d // S.card = k} ℂ :=
+  ⟨compoundMatrix A.mat k, by
+    show (compoundMatrix A.mat k).conjTranspose = compoundMatrix A.mat k
+    rw [← compoundMatrix_conjTranspose]
+    exact congrArg (compoundMatrix · k) A.H⟩
+
+private lemma compoundMatrix_unitary (U : Matrix d d ℂ)
+    (hU : U ∈ Matrix.unitaryGroup d ℂ) (k : ℕ) :
+    compoundMatrix U k ∈ Matrix.unitaryGroup {S : Finset d // S.card = k} ℂ := by
+  have h_unitary : (compoundMatrix U k).conjTranspose * compoundMatrix U k = 1 := by
+    have h_unitary :
+        (compoundMatrix U k).conjTranspose * compoundMatrix U k =
+          compoundMatrix (U.conjTranspose * U) k := by
+      rw [← compoundMatrix_conjTranspose, ← compoundMatrix_mul]
+    have h_unitary : U.conjTranspose * U = 1 := by
+      exact hU.1.symm ▸ by simp
+    have h_id : compoundMatrix (1 : Matrix d d ℂ) k = 1 := by
+      convert compoundMatrix_diagonal (fun _ => 1) k using 1
+      aesop
+    grind
+  have h_unitary' : compoundMatrix U k * (compoundMatrix U k).conjTranspose = 1 := by
+    rw [← mul_eq_one_comm, h_unitary]
+  exact ⟨h_unitary, h_unitary'⟩
+
+private lemma compoundHermitian_eigenvalues
+    (A : HermitianMat d ℂ) (k : ℕ) :
+    ∃ σ : {S : Finset d // S.card = k} ≃ {S : Finset d // S.card = k},
+      (compoundHermitian A k).H.eigenvalues ∘ σ =
+        fun S => ∏ i : Fin k, A.H.eigenvalues (S.1.orderEmbOfFin S.2 i) := by
+  apply Matrix.IsHermitian.eigenvalues_eq_of_unitary_similarity_diagonal
+  rotate_right
+  · exact compoundMatrix (Matrix.IsHermitian.eigenvectorUnitary A.H) k
+  · exact compoundMatrix_unitary _ (by simp [Matrix.unitaryGroup]) _
+  ·
+    have := Matrix.IsHermitian.spectral_theorem A.H
+    convert congrArg (fun x => compoundMatrix x k) this using 1
+    all_goals simp [compoundMatrix_mul, compoundMatrix_diagonal, Matrix.mul_assoc]
+    rw [Matrix.star_eq_conjTranspose, ← compoundMatrix_conjTranspose]
+
+private lemma compoundHermitian_nonneg (A : HermitianMat d ℂ) (hA : 0 ≤ A) (k : ℕ) :
+    0 ≤ compoundHermitian A k := by
+  rw [zero_le_iff, (compoundHermitian A k).H.posSemidef_iff_eigenvalues_nonneg]
+  obtain ⟨σ, hσ⟩ := compoundHermitian_eigenvalues A k
+  intro S
+  have hS := congrFun hσ (σ.symm S)
+  simp at hS
+  rw [hS]
+  exact Finset.prod_nonneg (fun i _ => A.eigenvalues_nonneg hA _)
+
+private lemma compoundHermitian_posDef (A : HermitianMat d ℂ)
+    (hA : A.mat.PosDef) (k : ℕ) :
+    (compoundHermitian A k).mat.PosDef := by
+  rw [(compoundHermitian A k).H.posDef_iff_eigenvalues_pos]
+  obtain ⟨σ, hσ⟩ := compoundHermitian_eigenvalues A k
+  intro S
+  have hS := congrFun hσ (σ.symm S)
+  simp at hS
+  rw [hS]
+  exact Finset.prod_pos (fun i _ => Matrix.PosDef.eigenvalues_pos hA _)
+
+private lemma compoundHermitian_conj (A : HermitianMat d ℂ) (B : Matrix d d ℂ) (k : ℕ) :
+    compoundHermitian (A.conj B) k =
+      (compoundHermitian A k).conj (compoundMatrix B k) := by
+  ext1
+  simp [compoundHermitian, HermitianMat.conj_apply_mat, compoundMatrix_mul, Matrix.mul_assoc]
+  rw [← compoundMatrix_conjTranspose]
+
+private lemma compoundHermitian_diagonal (a : d → ℝ) (k : ℕ) :
+    compoundHermitian (diagonal ℂ a) k =
+      diagonal ℂ
+        (fun S : {S : Finset d // S.card = k} =>
+          ∏ i : Fin k, a (S.1.orderEmbOfFin S.2 i)) := by
+  ext1
+  simp [compoundHermitian, compoundMatrix_diagonal]
+
+private lemma compoundHermitian_diagonal_rpow (a : d → ℝ) (ha : ∀ i, 0 ≤ a i)
+    (k : ℕ) (r : ℝ) :
+    compoundHermitian ((diagonal ℂ a) ^ r) k =
+      (compoundHermitian (diagonal ℂ a) k) ^ r := by
+  rw [rpow_diagonal, compoundHermitian_diagonal, compoundHermitian_diagonal, rpow_diagonal]
+  ext S T
+  by_cases h : S = T
+  · subst h
+    simp [Real.finset_prod_rpow _ _ (fun i _ => ha _)]
+  · rw [HermitianMat.diagonal_mat, HermitianMat.diagonal_mat]
+    simp [Matrix.diagonal, h]
+
+private noncomputable def compoundUnitary (U : Matrix.unitaryGroup d ℂ) (k : ℕ) :
+    Matrix.unitaryGroup {S : Finset d // S.card = k} ℂ :=
+  ⟨compoundMatrix U.val k, compoundMatrix_unitary U.val U.property k⟩
+
+private lemma compoundHermitian_rpow (A : HermitianMat d ℂ) (hA : 0 ≤ A)
+    (k : ℕ) (r : ℝ) :
+    compoundHermitian (A ^ r) k = (compoundHermitian A k) ^ r := by
+  obtain ⟨U, a, ha, hAeq⟩ :
+      ∃ U : 𝐔[d], ∃ a : d → ℝ, (∀ i, 0 ≤ a i) ∧ A = conj U.val (diagonal ℂ a) := by
+    rw [zero_le_iff] at hA
+    exact ⟨_, _, hA.eigenvalues_nonneg, eq_conj_diagonal A⟩
+  rw [hAeq, rpow_conj_unitary]
+  rw [compoundHermitian_conj]
+  rw [compoundHermitian_conj]
+  calc
+    (conj (compoundUnitary U k).val) ((diagonal ℂ a ^ r).compoundHermitian k)
+      = (conj (compoundUnitary U k).val) (((diagonal ℂ a).compoundHermitian k) ^ r) := by
+          rw [compoundHermitian_diagonal_rpow a ha]
+    _ = ((conj (compoundUnitary U k).val) ((diagonal ℂ a).compoundHermitian k)) ^ r := by
+          simpa using
+            (rpow_conj_unitary ((diagonal ℂ a).compoundHermitian k) (compoundUnitary U k) r).symm
+
+omit [DecidableEq d] in
+private lemma compound_card_pos (k : ℕ) (hk : k ≤ Fintype.card d) :
+    0 < Fintype.card {S : Finset d // S.card = k} := by
+  classical
+  obtain ⟨S, _, hScard⟩ := Finset.exists_subset_card_eq (s := (Finset.univ : Finset d)) hk
+  exact Fintype.card_pos_iff.mpr ⟨⟨S, hScard⟩⟩
+
+private def compoundZero (k : ℕ) (hk : k ≤ Fintype.card d) :
+    Fin (Fintype.card {S : Finset d // S.card = k}) :=
+  ⟨0, compound_card_pos k hk⟩
+
+private lemma compound_half_mul_eq
+    {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (k : ℕ) :
+    compoundMatrix ((A ^ (1 / 2 : ℝ)).mat * B.mat) k =
+      ((compoundHermitian A k) ^ (1 / 2 : ℝ)).mat * (compoundHermitian B k).mat := by
+  rw [compoundMatrix_mul]
+  change (compoundHermitian (A ^ (1 / 2 : ℝ)) k).mat * (compoundHermitian B k).mat =
+      ((compoundHermitian A k) ^ (1 / 2 : ℝ)).mat * (compoundHermitian B k).mat
+  rw [compoundHermitian_rpow A hA k (1 / 2 : ℝ)]
+
+private lemma compound_rpow_mul_eq
+    {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : 0 ≤ B) {r : ℝ} (k : ℕ) :
+    compoundMatrix ((A ^ (r / 2 : ℝ)).mat * (B ^ r).mat) k =
+      ((compoundHermitian A k) ^ (r / 2 : ℝ)).mat * ((compoundHermitian B k) ^ r).mat := by
+  rw [compoundMatrix_mul]
+  change (compoundHermitian (A ^ (r / 2 : ℝ)) k).mat * (compoundHermitian (B ^ r) k).mat =
+      ((compoundHermitian A k) ^ (r / 2 : ℝ)).mat * ((compoundHermitian B k) ^ r).mat
+  rw [compoundHermitian_rpow A hA k (r / 2 : ℝ), compoundHermitian_rpow B hB k r]
+
+
+private lemma conj_rpow_le_one_of_conj_le_one_posDef
+    {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : B.mat.PosDef)
+    {r : ℝ} (hr0 : 0 < r) (hr1 : r ≤ 1)
+    (hAB : A.conj B.mat ≤ 1) :
+    (A ^ r).conj (B ^ r).mat ≤ 1 := by
+  have hA_le : A ≤ B ^ (-2 : ℝ) := by
+    have hconj := HermitianMat.conj_mono (M := (B ^ (-1 : ℝ)).mat) hAB
+    have hleft : (A.conj B.mat).conj (B ^ (-1 : ℝ)).mat = A := by
+      rw [HermitianMat.conj_conj]
+      have hmul : (B ^ (-1 : ℝ)).mat * B.mat = 1 := by
+        simpa using rpow_neg_mul_rpow_self hB 1
+      exact (HermitianMat.conj_one (A := A)).symm ▸ by simp [hmul]
+    have hright : (1 : HermitianMat d ℂ).conj (B ^ (-1 : ℝ)).mat = B ^ (-2 : ℝ) := by
+      ext1
+      rw [HermitianMat.conj_apply_mat]
+      simp only [HermitianMat.conjTranspose_mat]
+      calc
+        (B ^ (-1 : ℝ)).mat * 1 * (B ^ (-1 : ℝ)).mat = (B ^ (-1 : ℝ)).mat * (B ^ (-1 : ℝ)).mat := by
+          simp
+        _ = (B ^ (-2 : ℝ)).mat := by
+          symm
+          rw [← HermitianMat.mat_rpow_add (zero_le_iff.mpr hB.posSemidef)]
+          · norm_num
+          · norm_num
+    simpa [hleft, hright] using hconj
+  have hAr_le : A ^ r ≤ (B ^ (-2 : ℝ)) ^ r := by
+    exact rpow_le_rpow_of_le hA hA_le hr0 hr1
+  have hconj := HermitianMat.conj_mono (M := (B ^ r).mat) hAr_le
+  have hright : ((B ^ (-2 : ℝ)) ^ r).conj (B ^ r).mat = 1 := by
+    ext1
+    rw [HermitianMat.conj_apply_mat]
+    simp only [HermitianMat.conjTranspose_mat]
+    have h1 : ((B ^ (-2 : ℝ)) ^ r) = B ^ (-2 * r) := by
+      rw [← HermitianMat.rpow_mul (zero_le_iff.mpr hB.posSemidef)]
+    rw [h1]
+    calc
+      (B ^ r).mat * (B ^ (-2 * r)).mat * (B ^ r).mat = (B ^ r).mat * (B ^ (-r)).mat := by
+        rw [Matrix.mul_assoc, ← HermitianMat.mat_rpow_add (zero_le_iff.mpr hB.posSemidef)]
+        · ring_nf
+        · linarith [hr0.ne']
+      _ = 1 := by
+        have hInv : (B ^ (-r : ℝ)).mat = (B ^ r).mat⁻¹ := by
+          simpa [HermitianMat.mat_inv] using congrArg HermitianMat.mat (rpow_inv_eq_neg_rpow hB r).symm
+        rw [hInv]
+        exact Matrix.mul_nonsing_inv _ (((B ^ r).mat).isUnit_iff_isUnit_det.mp (isUnit_rpow_toMat hB r))
+  exact le_trans hconj hright.le
+
+private lemma smul_rpow_of_nonneg {A : HermitianMat d ℂ} (hA : 0 ≤ A) {c r : ℝ} (hc : 0 ≤ c) :
+    (c • A) ^ r = c ^ r • (A ^ r) := by
+  rw [show c • A = A.cfc (fun x => c * x) from
+    (HermitianMat.cfc_const_mul_id (A := A) (r := c)).symm]
+  rw [HermitianMat.rpow_eq_cfc, ← HermitianMat.cfc_comp]
+  calc
+    A.cfc (((fun x => x ^ r) : ℝ → ℝ) ∘ fun x => c * x)
+      = A.cfc (fun x => c ^ r * x ^ r) := by
+          apply HermitianMat.cfc_congr_of_nonneg hA
+          intro x hx
+          rw [Function.comp_apply, Real.mul_rpow hc hx]
+    _ = c ^ r • (A ^ r) := by
+          rw [HermitianMat.cfc_const_mul, HermitianMat.rpow_eq_cfc]
+
+private lemma conj_smul_right (A B : HermitianMat d ℂ) (c : ℝ) :
+    A.conj (↑(c • B).mat) = c ^ 2 • A.conj B.mat := by
+  ext1
+  rw [HermitianMat.conj_apply_mat]
+  simp [HermitianMat.mat_smul, Matrix.conjTranspose_smul, sq, smul_smul]
+
+omit [DecidableEq d] in
+private lemma smul_posDef {A : HermitianMat d ℂ} (hA : A.mat.PosDef) {c : ℝ} (hc : 0 < c) :
+    (c • A).mat.PosDef := by
+  have hA' := Matrix.posDef_iff_dotProduct_mulVec.mp hA
+  rw [Matrix.posDef_iff_dotProduct_mulVec]
+  constructor
+  · simpa [HermitianMat.mat_smul] using Matrix.IsHermitian.smul_real hA'.1 c
+  · intro x hx
+    have h_eq : star x ⬝ᵥ ((c • A.mat).mulVec x) = (c : ℂ) * (star x ⬝ᵥ (A.mat.mulVec x)) := by
+      simp [dotProduct, Matrix.mulVec, Finset.mul_sum, mul_left_comm, mul_comm]
+    rw [HermitianMat.mat_smul, h_eq]
+    exact mul_pos (by exact_mod_cast hc) (hA'.2 hx)
+
+private lemma conjTranspose_half_mul_eq_conj
+    {A B : HermitianMat d ℂ} (hA : 0 ≤ A) :
+    ((A ^ (1/2 : ℝ)).mat * B.mat).conjTranspose * ((A ^ (1/2 : ℝ)).mat * B.mat)
+      = (A.conj B.mat).mat := by
+  have := HermitianMat.pow_half_mul hA
+  simp only [Matrix.conjTranspose_mul, HermitianMat.conjTranspose_mat, Matrix.mul_assoc]
+  simpa [HermitianMat.conj_apply_mat, Matrix.mul_assoc] using congrArg (fun M => B.mat * M * B.mat) this
+
+private lemma top_singular_le_of_self_mul_le_smul_one
+    {e : Type*} [Fintype e] [DecidableEq e] (X : Matrix e e ℂ)
+    {α : ℝ} (_ : 0 ≤ α) (hX : X.conjTranspose * X ≤ α • (1 : Matrix e e ℂ))
+    (hcard : 0 < Fintype.card e) :
+    singularValuesSorted X ⟨0, hcard⟩ ≤ Real.sqrt α := by
+  letI : Nonempty e := Fintype.card_pos_iff.mp hcard
+  let hne : (Finset.univ : Finset e).Nonempty := by
+    simp
+  calc
+    singularValuesSorted X ⟨0, hcard⟩
+      = Finset.sup' Finset.univ hne (singularValues X) := by
+          simpa using singularValuesSorted_zero_eq_sup X hcard
+    _ ≤ Real.sqrt α := by
+      refine Finset.sup'_le _ _ ?_
+      intro i hi
+      unfold singularValues
+      refine Real.sqrt_le_sqrt ?_
+      exact (Matrix.PosSemidef.le_smul_one_of_eigenvalues_iff
+        (Matrix.isHermitian_mul_conjTranspose_self X.conjTranspose) α).mpr (by simpa using hX) i
+
+private lemma compound_top_singular_le_posDef
+    {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : B.mat.PosDef)
+    {r : ℝ} (hr0 : 0 < r) (hr1 : r ≤ 1)
+    (k : ℕ) (hk : k ≤ Fintype.card d) :
+    singularValuesSorted (compoundMatrix ((A ^ (r / 2 : ℝ)).mat * (B ^ r).mat) k) (compoundZero k hk) ≤
+      singularValuesSorted (compoundMatrix ((A ^ (1 / 2 : ℝ)).mat * B.mat) k) (compoundZero k hk) ^ r := by
+  let Ak : HermitianMat {S : Finset d // S.card = k} ℂ := compoundHermitian A k
+  let Bk : HermitianMat {S : Finset d // S.card = k} ℂ := compoundHermitian B k
+  let Mk : Matrix {S : Finset d // S.card = k} {S : Finset d // S.card = k} ℂ :=
+    compoundMatrix ((A ^ (1 / 2 : ℝ)).mat * B.mat) k
+  let Nk : Matrix {S : Finset d // S.card = k} {S : Finset d // S.card = k} ℂ :=
+    compoundMatrix ((A ^ (r / 2 : ℝ)).mat * (B ^ r).mat) k
+  let c : ℝ := singularValuesSorted Mk (compoundZero k hk)
+  have hAk : 0 ≤ Ak := compoundHermitian_nonneg A hA k
+  have hBk : Bk.mat.PosDef := compoundHermitian_posDef B hB k
+  have hc_nonneg : 0 ≤ c := singularValuesSorted_nonneg Mk (compoundZero k hk)
+  have hMk_conj : Mk.conjTranspose * Mk = (Ak.conj Bk.mat).mat := by
+    dsimp [Mk, Ak, Bk]; rw [compound_half_mul_eq hA]
+    exact conjTranspose_half_mul_eq_conj (A := compoundHermitian A k)
+      (B := compoundHermitian B k) (compoundHermitian_nonneg A hA k)
+  have hNk_conj : Nk.conjTranspose * Nk = ((Ak ^ r).conj (Bk ^ r).mat).mat := by
+    dsimp [Nk, Ak, Bk]; rw [compound_rpow_mul_eq hA (zero_le_iff.mpr hB.posSemidef) (r := r)]
+    rw [show (compoundHermitian A k) ^ (r / 2 : ℝ) = ((compoundHermitian A k) ^ r) ^ (1 / 2 : ℝ) from by
+      rw [← HermitianMat.rpow_mul (compoundHermitian_nonneg A hA k)]; ring_nf]
+    exact conjTranspose_half_mul_eq_conj
+      (A := (compoundHermitian A k) ^ r) (B := (compoundHermitian B k) ^ r)
+      (rpow_nonneg (compoundHermitian_nonneg A hA k))
+  have hMk_le : Ak.conj Bk.mat ≤ c ^ 2 • 1 := by
+    change (Ak.conj Bk.mat).mat ≤ (c ^ 2 • (1 : HermitianMat {S : Finset d // S.card = k} ℂ)).mat
+    have hmat' : Mk.conjTranspose * Mk.conjTranspose.conjTranspose ≤
+        c ^ 2 • (1 : Matrix {S : Finset d // S.card = k} {S : Finset d // S.card = k} ℂ) :=
+      (Matrix.PosSemidef.le_smul_one_of_eigenvalues_iff
+        (Matrix.isHermitian_mul_conjTranspose_self Mk.conjTranspose) (c ^ 2)).mp
+          fun i => by dsimp [c]; exact eigenvalue_le_singularValuesSorted_sq Mk (compound_card_pos k hk) i
+    have hmat : Mk.conjTranspose * Mk ≤ c ^ 2 • (1 : Matrix {S : Finset d // S.card = k} {S : Finset d // S.card = k} ℂ) := by
+      simpa using hmat'
+    simpa [HermitianMat.conj_apply_mat, hMk_conj] using hmat
+  by_cases hc_zero : c = 0
+  · have hMk_eq_zero : Ak.conj Bk.mat = 0 := by
+      apply le_antisymm
+      · have := hMk_le; rw [hc_zero] at this; simpa using this
+      · exact HermitianMat.conj_nonneg (M := Bk.mat) hAk
+    have hAk_eq_zero : Ak = 0 := by
+      have hconj := congrArg (fun H : HermitianMat _ ℂ => H.conj (Bk ^ (-1 : ℝ)).mat) hMk_eq_zero
+      have hleft : (Ak.conj Bk.mat).conj (Bk ^ (-1 : ℝ)).mat = Ak := by
+        rw [HermitianMat.conj_conj]
+        have : (Bk ^ (-1 : ℝ)).mat * Bk.mat = 1 := by
+          simpa using rpow_neg_mul_rpow_self hBk 1
+        simp [this, HermitianMat.conj_one (A := Ak)]
+      simpa [hleft] using hconj
+    have hNk_zero : Nk.conjTranspose * Nk = 0 := by
+      rw [hNk_conj, hAk_eq_zero]
+      simp [rpow_eq_cfc, cfc_apply_zero, Real.zero_rpow hr0.ne']
+    have hNk_le : Nk.conjTranspose * Nk ≤ (0 : ℝ) • (1 : Matrix {S : Finset d // S.card = k} {S : Finset d // S.card = k} ℂ) := by
+      simp [hNk_zero]
+    have htop : singularValuesSorted Nk (compoundZero k hk) ≤ Real.sqrt 0 := by
+      exact top_singular_le_of_self_mul_le_smul_one Nk (show 0 ≤ (0 : ℝ) by norm_num) hNk_le
+        (compound_card_pos k hk)
+    have hM_zero : singularValuesSorted Mk (compoundZero k hk) = 0 := by
+      simpa [c] using hc_zero
+    have hMr : singularValuesSorted Mk (compoundZero k hk) ^ r = 0 := by
+      rw [hM_zero, Real.zero_rpow hr0.ne']
+    simp only [Real.sqrt_zero] at htop
+    exact htop.trans (by rw [hMr])
+  · have hc_pos : 0 < c := lt_of_le_of_ne hc_nonneg (Ne.symm hc_zero)
+    have hscaled : Ak.conj ((c⁻¹) • Bk).mat ≤ 1 := by
+      have hmul := smul_le_smul_of_nonneg_left hMk_le (show 0 ≤ c⁻¹ ^ 2 by positivity)
+      have hscaled' : c⁻¹ ^ 2 • Ak.conj Bk.mat ≤ 1 := by
+        have hs : (c ^ 2)⁻¹ * c ^ 2 = 1 := by field_simp [pow_two, hc_zero]
+        simpa [smul_smul, hs] using hmul
+      rw [conj_smul_right]
+      exact hscaled'
+    have hpow := conj_rpow_le_one_of_conj_le_one_posDef hAk
+      (smul_posDef hBk (inv_pos.mpr hc_pos)) hr0 hr1 hscaled
+    have hpow' : ((c⁻¹) ^ r) ^ 2 • ((Ak ^ r).conj (Bk ^ r).mat) ≤ 1 := by
+      have hBk_scale : ((c⁻¹) • Bk) ^ r = (c⁻¹) ^ r • (Bk ^ r) :=
+        smul_rpow_of_nonneg (A := Bk) (hA := zero_le_iff.mpr hBk.posSemidef)
+          (c := c⁻¹) (r := r) (inv_nonneg.mpr hc_nonneg)
+      rwa [hBk_scale, conj_smul_right] at hpow
+    have hNk_le : ((Ak ^ r).conj (Bk ^ r).mat) ≤ c ^ (2 * r) • 1 := by
+      have hmul := smul_le_smul_of_nonneg_left hpow' (show 0 ≤ c ^ (2 * r) by positivity)
+      have hs : c ^ (2 * r) * ((c⁻¹) ^ r) ^ 2 = 1 := by
+        have hcr_pos : 0 < c ^ r := Real.rpow_pos_of_pos hc_pos r
+        have hpow : c ^ (2 * r) = (c ^ r) ^ 2 := by
+          calc
+            c ^ (2 * r) = c ^ (r + r) := by ring_nf
+            _ = c ^ r * c ^ r := by rw [Real.rpow_add hc_pos]
+            _ = (c ^ r) ^ 2 := by ring
+        have hinv : (c⁻¹) ^ r = (c ^ r)⁻¹ := by
+          rw [Real.inv_rpow hc_nonneg]
+        calc
+          c ^ (2 * r) * ((c⁻¹) ^ r) ^ 2 = (c ^ r) ^ 2 * ((c ^ r)⁻¹) ^ 2 := by
+            rw [hpow, hinv]
+          _ = 1 := by
+            field_simp [pow_two, hcr_pos.ne']
+      rwa [smul_smul, hs, one_smul] at hmul
+    have htop : singularValuesSorted Nk (compoundZero k hk) ≤ Real.sqrt (c ^ (2 * r)) :=
+      top_singular_le_of_self_mul_le_smul_one Nk
+        (by positivity)
+        (hNk_conj ▸ hNk_le)
+        (compound_card_pos k hk)
+    have hsqrt : Real.sqrt (c ^ (2 * r)) = c ^ r := by
+      have hpow : c ^ (2 * r) = (c ^ r) ^ 2 := by
+        rw [mul_comm, Real.rpow_mul hc_nonneg]
+        norm_num
+      rw [hpow, Real.sqrt_sq_eq_abs, abs_of_nonneg]
+      exact Real.rpow_nonneg hc_nonneg r
+    exact htop.trans (by rw [hsqrt])
 
 /-- An inequality of Lieb-Thirring type. For 0 < r ≤ 1:
   `Tr[B^r A^r B^r] ≤ Tr[(B A B)^r]`.
 -/
+private lemma trace_conj_rpow_eq_sum_singularValuesSorted
+    {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (α : ℝ) :
+    ((A.conj B.mat) ^ α).trace =
+      ∑ i : Fin (Fintype.card d),
+        singularValuesSorted ((A ^ (1 / 2 : ℝ)).mat * B.mat) i ^ (2 * α) := by
+  let M : Matrix d d ℂ := (A ^ (1 / 2 : ℝ)).mat * B.mat
+  let H : HermitianMat d ℂ :=
+    ⟨M.conjTranspose * M, by
+      simpa using Matrix.isHermitian_mul_conjTranspose_self M.conjTranspose⟩
+  have hH : H = A.conj B.mat := by
+    ext1; dsimp [H, M]
+    exact conjTranspose_half_mul_eq_conj (A := A) (B := B) hA
+  calc
+    ((A.conj B.mat) ^ α).trace = ∑ i, (H.H.eigenvalues i) ^ α := by
+      rw [← hH]; exact trace_rpow_eq_sum H α
+    _ = ∑ i : Fin (Fintype.card d), singularValuesSorted M i ^ (2 * α) := by
+      rw [← sum_singularValues_rpow_eq_sum_sorted M (2 * α)]
+      refine Finset.sum_congr rfl fun i _ => ?_
+      unfold singularValues
+      have h_nn := Matrix.eigenvalues_conjTranspose_mul_self_nonneg M i
+      rw [show H.H.eigenvalues i = Real.sqrt (H.H.eigenvalues i) ^ 2 from
+        (Real.sq_sqrt h_nn).symm, ← Real.rpow_natCast _ 2,
+        ← Real.rpow_mul (Real.sqrt_nonneg _)]
+      push_cast
+      have heqmat : (Matrix.isHermitian_mul_conjTranspose_self M.conjTranspose).eigenvalues i =
+          H.H.eigenvalues i := by
+        congr 1
+        simp [H, Matrix.conjTranspose_conjTranspose]
+      rw [heqmat]
+
+private lemma lieb_thirring_le_one_posDef
+    {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : B.mat.PosDef)
+    {r : ℝ} (hr0 : 0 < r) (hr1 : r ≤ 1) :
+    ((A ^ r).conj (B ^ r).mat).trace ≤ ((A.conj B.mat) ^ r).trace := by
+  classical
+  let M : Matrix d d ℂ := (A ^ (1 / 2 : ℝ)).mat * B.mat
+  let N : Matrix d d ℂ := (A ^ (r / 2 : ℝ)).mat * (B ^ r).mat
+  have hlogmaj :
+      ∀ (k : ℕ) (_ : k ≤ Fintype.card d),
+        ∏ i : Fin k, singularValuesSorted N ⟨i.val, by omega⟩ ≤
+        ∏ i : Fin k, (singularValuesSorted M ⟨i.val, by omega⟩) ^ r := by
+    intro k hk
+    calc
+      ∏ i : Fin k, singularValuesSorted N ⟨i.val, by omega⟩
+        = singularValuesSorted (compoundMatrix N k) (compoundZero k hk) := by
+            simpa [N] using prod_singularValuesSorted_eq_compoundSV N k hk
+      _ ≤ singularValuesSorted (compoundMatrix M k) (compoundZero k hk) ^ r := by
+            simpa [M, N] using compound_top_singular_le_posDef hA hB hr0 hr1 k hk
+      _ = ∏ i : Fin k, (singularValuesSorted M ⟨i.val, by omega⟩) ^ r := by
+            have hprod := congrArg (· ^ r) (prod_singularValuesSorted_eq_compoundSV M k hk).symm
+            have hrpow := (Real.finset_prod_rpow (s := Finset.univ)
+              (f := fun i : Fin k => singularValuesSorted M ⟨i.val, by omega⟩)
+              (fun i _ => singularValuesSorted_nonneg M _) r)
+            simpa using hprod.trans hrpow.symm
+  have hsum :
+      ∑ i : Fin (Fintype.card d), singularValuesSorted N i ^ 2 ≤
+      ∑ i : Fin (Fintype.card d), (singularValuesSorted M i ^ r) ^ 2 := by
+    simpa using
+      (weak_log_maj_sum_rpow_le
+        (n := Fintype.card d)
+        (x := singularValuesSorted N)
+        (y := fun i : Fin (Fintype.card d) => singularValuesSorted M i ^ r)
+        (r := (2 : ℝ))
+        (fun i => singularValuesSorted_nonneg N i)
+        (fun i => Real.rpow_nonneg (singularValuesSorted_nonneg M i) r)
+        (singularValuesSorted_antitone N)
+        (rpow_antitone_of_nonneg_antitone
+          (singularValuesSorted_antitone M)
+          (singularValuesSorted_nonneg M)
+          hr0)
+        hlogmaj
+        (by norm_num : 0 < (2 : ℝ)))
+  have hleft :
+      ((A ^ r).conj (B ^ r).mat).trace =
+        ∑ i : Fin (Fintype.card d), singularValuesSorted N i ^ 2 := by
+    have := trace_conj_rpow_eq_sum_singularValuesSorted (A := A ^ r) (B := B ^ r) (hA := rpow_nonneg hA) (α := 1)
+    rw [show ((A ^ r) ^ (1 / 2 : ℝ)) = A ^ (r / 2 : ℝ) from by
+      rw [← HermitianMat.rpow_mul hA]; ring_nf] at this
+    simpa [N] using this
+  have hright :
+      ((A.conj B.mat) ^ r).trace =
+        ∑ i : Fin (Fintype.card d), (singularValuesSorted M i ^ r) ^ 2 := by
+    calc ((A.conj B.mat) ^ r).trace
+        = ∑ i : Fin (Fintype.card d), singularValuesSorted M i ^ (2 * r) := by
+            simpa [M] using trace_conj_rpow_eq_sum_singularValuesSorted (A := A) (B := B) (hA := hA) (α := r)
+      _ = ∑ i, (singularValuesSorted M i ^ r) ^ 2 := Finset.sum_congr rfl fun i _ => by
+            have hn := singularValuesSorted_nonneg M i
+            rw [← Real.rpow_natCast _ 2, ← Real.rpow_mul hn]; push_cast; ring_nf
+  rw [hleft, hright]
+  exact hsum
+
 lemma lieb_thirring_le_one
     {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : 0 ≤ B)
-    {r : ℝ} (hq0 : 0 < r) (hq1 : q ≤ r) :
+    {r : ℝ} (hr0 : 0 < r) (hr1 : r ≤ 1) :
     ((A ^ r).conj (B ^ r).mat).trace ≤ ((A.conj B.mat) ^ r).trace := by
-  sorry
+  set Bε : ℝ → HermitianMat d ℂ := fun ε => B + ε • 1
+  have hPos : ∀ ε > 0, (Bε ε).mat.PosDef := by
+    intro ε hε
+    simpa [Bε, add_comm, add_left_comm, add_assoc] using
+      ((Matrix.PosDef.one).smul hε).add_posSemidef (HermitianMat.zero_le_iff.mp hB)
+  have hεineq :
+      ∀ ε > 0,
+        ((A ^ r).conj ((Bε ε) ^ r).mat).trace ≤ ((A.conj (Bε ε).mat) ^ r).trace := by
+    intro ε hε
+    simpa [Bε] using lieb_thirring_le_one_posDef hA (hPos ε hε) hr0 hr1
+  -- Helper to avoid expensive isDefEq: prove f(0) = target explicitly, then rewrite nhds
+  have tendsto_helper {f : ℝ → HermitianMat d ℂ} (hf : Continuous f)
+      {target : HermitianMat d ℂ} (h0 : f 0 = target) :
+      Filter.Tendsto (fun ε => (f ε).trace) (nhdsWithin 0 (Set.Ioi 0)) (nhds target.trace) := by
+    rw [← h0]
+    simp only [HermitianMat.trace_eq_re_trace]
+    exact (RCLike.continuous_re.comp (HermitianMat.continuous_mat.comp hf).matrix_trace).continuousWithinAt.tendsto
+  have hBε_cont : Continuous (fun ε : ℝ => Bε ε) := by fun_prop
+  have hleft_tendsto :
+      Filter.Tendsto
+        (fun ε => ((A ^ r).conj ((Bε ε) ^ r).mat).trace)
+        (nhdsWithin 0 (Set.Ioi 0))
+        (nhds (((A ^ r).conj (B ^ r).mat).trace)) :=
+    tendsto_helper
+      ((HermitianMat.continuous_conj (ρ := A ^ r)).comp
+        (HermitianMat.continuous_mat.comp ((rpow_const_continuous hr0.le).comp hBε_cont)))
+      (by simp [Bε])
+  have hright_tendsto :
+      Filter.Tendsto
+        (fun ε => ((A.conj (Bε ε).mat) ^ r).trace)
+        (nhdsWithin 0 (Set.Ioi 0))
+        (nhds (((A.conj B.mat) ^ r).trace)) :=
+    tendsto_helper
+      ((rpow_const_continuous hr0.le).comp
+        ((HermitianMat.continuous_conj (ρ := A)).comp
+          (HermitianMat.continuous_mat.comp hBε_cont)))
+      (by simp [Bε])
+  exact le_of_tendsto_of_tendsto hleft_tendsto hright_tendsto
+    (Filter.eventually_of_mem self_mem_nhdsWithin (fun ε hε => hεineq ε hε))
 
 end ArakiLiebThirring
 
@@ -696,8 +1185,315 @@ be nice to have as a fact.
 A stronger version states it as a majorization theorem. See
 e.g. https://www.math.uwaterloo.ca/~hwolkowi/henry/reports/thesismingmay613.pdf
 -/
+open ComplexOrder MatrixOrder MeasureTheory Filter
+
+private lemma inv_add_right_antitone {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : 0 ≤ B)
+    {t : ℝ} (ht : 0 < t) :
+    (A + B + t • 1)⁻¹ ≤ (A + t • 1)⁻¹ := by
+  have hPosA : (A + t • 1).mat.PosDef := by
+    simpa [add_comm, add_left_comm, add_assoc] using
+      ((Matrix.PosDef.one).smul ht).add_posSemidef (HermitianMat.zero_le_iff.mp hA)
+  apply inv_antitone
+  · exact hPosA
+  · simpa [add_assoc, add_left_comm, add_comm] using add_le_add_right hB (A + t • 1)
+
+private lemma trace_conj_mono_sqrt {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : 0 ≤ B)
+    {t : ℝ} (ht : 0 < t) :
+    (((A + B + t • 1)⁻¹).conj A.sqrt.mat).trace ≤ (((A + t • 1)⁻¹).conj A.sqrt.mat).trace := by
+  have hInv : (A + B + t • 1)⁻¹ ≤ (A + t • 1)⁻¹ := inv_add_right_antitone hA hB ht
+  have hConj : ((A + B + t • 1)⁻¹).conj A.sqrt.mat ≤ ((A + t • 1)⁻¹).conj A.sqrt.mat := by
+    exact HermitianMat.conj_mono (M := A.sqrt.mat) hInv
+  have hTrace := HermitianMat.trace_nonneg (show
+      0 ≤ ((A + t • 1)⁻¹).conj A.sqrt.mat - ((A + B + t • 1)⁻¹).conj A.sqrt.mat by
+    simpa [sub_nonneg] using hConj)
+  simpa [HermitianMat.trace_sub] using hTrace
+
+private lemma trace_conj_sqrt_eq_trace_mul {A X : HermitianMat d ℂ} (hA : 0 ≤ A) :
+    (((X).conj A.sqrt.mat).trace : ℂ) = (X.mat * A.mat).trace := by
+  change algebraMap ℝ ℂ ((X.conj A.sqrt.mat).trace) = (X.mat * A.mat).trace
+  rw [HermitianMat.trace_eq_trace]
+  rw [HermitianMat.conj_apply_mat]
+  simp [HermitianMat.conjTranspose_mat]
+  rw [Matrix.trace_mul_cycle, HermitianMat.sqrt_sq hA, Matrix.trace_mul_comm]
+
+private lemma trace_conj_sqrt_eq_trace_mul_left {A X : HermitianMat d ℂ} (hA : 0 ≤ A) :
+    (((X).conj A.sqrt.mat).trace : ℂ) = (A.mat * X.mat).trace := by
+  rw [trace_conj_sqrt_eq_trace_mul hA, Matrix.trace_mul_comm]
+
+private lemma inv_shift_eq_cfc {A : HermitianMat d ℂ} (hA : 0 ≤ A) {t : ℝ} (ht : 0 < t) :
+    (A + t • 1)⁻¹ = A.cfc (fun u => (u + t)⁻¹) := by
+  have h_inv_def : (A + t • 1)⁻¹ = (A.cfc (fun u => u + t))⁻¹ := by
+    rw [show (fun u => u + t) = (fun u => u) + fun _ => t from rfl, cfc_add]
+    simp
+  have h_inv_comp : (A.cfc (fun u => u + t))⁻¹ = A.cfc (fun u => (u + t)⁻¹) := by
+    apply inv_cfc_eq_cfc_inv
+    intro i
+    exact ne_of_gt (add_pos_of_nonneg_of_pos (by simpa using hA.eigenvalues_nonneg i) ht)
+  rw [h_inv_def, h_inv_comp]
+
+private lemma scalarRpowApprox_eq_mul_integral_sub_integral {x q T : ℝ}
+    (hx : 0 < x) (hq : 0 < q) (hT : 0 < T) :
+    scalarRpowApprox q T x =
+      x * (∫ t in (0)..T, t ^ (q - 1) / (x + t)) -
+        (∫ t in (0)..T, t ^ (q - 1) / (1 + t)) := by
+  have : ∀ t ∈ Set.Ioc (0 : ℝ) T,
+      t ^ q * (1 / (1 + t) - 1 / (x + t)) =
+        x * (t ^ (q - 1) / (x + t)) - (t ^ (q - 1) / (1 + t)) := by
+    intro t ht
+    rw [Real.rpow_sub_one ht.1.ne']
+    grind
+  rw [HermitianMat.scalarRpowApprox, intervalIntegral.integral_of_le hT.le,
+    intervalIntegral.integral_of_le hT.le, intervalIntegral.integral_of_le hT.le]
+  rw [← MeasureTheory.integral_const_mul, ← MeasureTheory.integral_sub]
+  · exact setIntegral_congr_fun measurableSet_Ioc this
+  ·
+    apply Integrable.const_mul _ _
+    apply Integrable.mono' (g := fun t => t ^ (q - 1) / x)
+    · exact (intervalIntegral.intervalIntegrable_rpow' (by linarith)).1.div_const _
+    · apply Measurable.aestronglyMeasurable
+      fun_prop
+    · filter_upwards [ae_restrict_mem measurableSet_Ioc] with t ht
+      rw [Real.norm_of_nonneg (div_nonneg (Real.rpow_nonneg ht.1.le _) (by linarith [ht.1]))]
+      exact div_le_div_of_nonneg_left (Real.rpow_nonneg ht.1.le _) (by linarith [ht.1])
+        (by linarith [ht.1])
+  ·
+    apply Integrable.mono' (g := fun t => t ^ (q - 1) / (1 + 0))
+    · exact (intervalIntegral.intervalIntegrable_rpow' (by linarith)).1.div_const _
+    · apply Measurable.aestronglyMeasurable
+      fun_prop
+    · filter_upwards [ae_restrict_mem measurableSet_Ioc] with t ht
+      rw [Real.norm_of_nonneg (div_nonneg (Real.rpow_nonneg ht.1.le _) (by linarith [ht.1]))]
+      exact div_le_div_of_nonneg_left (Real.rpow_nonneg ht.1.le _) (by linarith [ht.1])
+        (by linarith [ht.1])
+
+private lemma tendsto_mul_intervalIntegral_rpow_div_add {x q : ℝ} (hx : 0 < x)
+    (hq : 0 < q) (hq1 : q < 1) :
+    Filter.Tendsto
+      (fun T => x * (∫ t in (0)..T, t ^ (q - 1) / (x + t)))
+      Filter.atTop
+      (nhds (rpowConst q * x ^ q)) := by
+  have h₁ : Filter.Tendsto
+      (fun T => scalarRpowApprox q T x)
+      Filter.atTop
+      (nhds (rpowConst q * (x ^ q - 1))) := scalarRpowApprox_tendsto hx hq hq1
+  have h₂ : Filter.Tendsto
+      (fun T => ∫ t in (0)..T, t ^ (q - 1) / (1 + t))
+      Filter.atTop
+      (nhds (rpowConst q)) := by
+    apply MeasureTheory.intervalIntegral_tendsto_integral_Ioi
+    · exact rpowConst_integrableOn hq hq1
+    · exact Filter.tendsto_id
+  have hEq : ∀ᶠ T in Filter.atTop,
+      x * (∫ t in (0)..T, t ^ (q - 1) / (x + t)) =
+        scalarRpowApprox q T x + (∫ t in (0)..T, t ^ (q - 1) / (1 + t)) := by
+    filter_upwards [Filter.eventually_gt_atTop (0 : ℝ)] with T hT
+    rw [scalarRpowApprox_eq_mul_integral_sub_integral hx hq hT]
+    ring
+  rw [Filter.tendsto_congr' hEq]
+  convert h₁.add h₂ using 1
+  ring_nf
+
+private lemma tendsto_mul_intervalIntegral_rpow_div_add_nonneg {x q : ℝ} (hx : 0 ≤ x)
+    (hq : 0 < q) (hq1 : q < 1) :
+    Filter.Tendsto
+      (fun T => x * (∫ t in (0)..T, t ^ (q - 1) / (x + t)))
+      Filter.atTop
+      (nhds (rpowConst q * x ^ q)) := by
+  rcases eq_or_lt_of_le hx with rfl | hx
+  · simp [Real.zero_rpow hq.ne']
+  · exact tendsto_mul_intervalIntegral_rpow_div_add hx hq hq1
+
+private lemma intervalIntegrable_weighted_div_nonneg {x p T : ℝ}
+    (hx : 0 ≤ x) (hp : 0 < p) (hT : 0 < T) :
+    IntervalIntegrable (fun t => t ^ (p - 1) * (x / (x + t))) volume 0 T := by
+  rw [intervalIntegrable_iff_integrableOn_Ioc_of_le hT.le]
+  apply Integrable.mono' (g := fun t => t ^ (p - 1))
+  · exact (intervalIntegral.intervalIntegrable_rpow' (by linarith : -1 < p - 1)).1
+      |>.mono_set (Set.Ioc_subset_Ioc le_rfl le_rfl)
+  · apply Measurable.aestronglyMeasurable
+    fun_prop
+  · filter_upwards [ae_restrict_mem measurableSet_Ioc] with t ht
+    have hfrac_nonneg : 0 ≤ x / (x + t) := by
+      exact div_nonneg hx (by linarith [ht.1])
+    rw [Real.norm_of_nonneg (mul_nonneg (Real.rpow_nonneg ht.1.le _) hfrac_nonneg)]
+    have hfrac_le : x / (x + t) ≤ 1 := by
+      exact (div_le_one (by linarith [ht.1])).2 (by linarith [ht.1])
+    simpa using mul_le_mul_of_nonneg_left hfrac_le (Real.rpow_nonneg ht.1.le _)
+
+private lemma tendsto_intervalIntegral_weighted_div_nonneg {x p : ℝ}
+    (hx : 0 ≤ x) (hp : 0 < p) (hp1 : p < 1) :
+    Filter.Tendsto
+      (fun T => ∫ t in (0)..T, t ^ (p - 1) * (x / (x + t)))
+      Filter.atTop
+      (nhds (rpowConst p * x ^ p)) := by
+  rcases eq_or_lt_of_le hx with rfl | hx'
+  · have hEq : ∀ᶠ T in Filter.atTop,
+        (∫ t in (0)..T, t ^ (p - 1) * (0 / (0 + t))) = 0 := by
+      filter_upwards [Filter.eventually_gt_atTop (0 : ℝ)] with T hT
+      apply intervalIntegral.integral_zero_ae
+      filter_upwards with t ht
+      have htIoc : t ∈ Set.Ioc (0 : ℝ) T := by
+        simpa [Set.uIoc_of_le hT.le] using ht
+      simp
+    rw [Filter.tendsto_congr' hEq]
+    simp [Real.zero_rpow hp.ne']
+  · have hEq : ∀ᶠ T in Filter.atTop,
+        (∫ t in (0)..T, t ^ (p - 1) * (x / (x + t))) =
+          x * (∫ t in (0)..T, t ^ (p - 1) / (x + t)) := by
+      filter_upwards [Filter.eventually_gt_atTop (0 : ℝ)] with T hT
+      rw [intervalIntegral.integral_of_le hT.le, intervalIntegral.integral_of_le hT.le]
+      rw [← MeasureTheory.integral_const_mul]
+      refine setIntegral_congr_fun
+        (f := fun t : ℝ => t ^ (p - 1) * (x / (x + t)))
+        (g := fun t : ℝ => x * (t ^ (p - 1) / (x + t)))
+        measurableSet_Ioc ?_
+      intro t ht
+      field_simp [hx'.ne', ht.1.ne']
+    rw [Filter.tendsto_congr' hEq]
+    exact tendsto_mul_intervalIntegral_rpow_div_add hx' hp hp1
+
+private lemma trace_mul_inv_shift_add_le {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : 0 ≤ B)
+    {t : ℝ} (ht : 0 < t) :
+    (((A + B).mat * (A + B + t • 1).mat⁻¹).trace : ℂ) ≤
+      ((A.mat * (A + t • 1).mat⁻¹).trace : ℂ) + ((B.mat * (B + t • 1).mat⁻¹).trace : ℂ) := by
+  rw [show (((A + B).mat * (A + B + t • 1).mat⁻¹).trace : ℂ) =
+    ((A.mat * (A + B + t • 1).mat⁻¹).trace : ℂ) + ((B.mat * (A + B + t • 1).mat⁻¹).trace : ℂ) from
+    by simp [HermitianMat.mat_add, Matrix.add_mul, Matrix.trace_add]]
+  exact add_le_add
+    (by change ((A.mat * ((A + B + t • 1)⁻¹).mat).trace : ℂ) ≤ ((A.mat * ((A + t • 1)⁻¹).mat).trace : ℂ)
+        rw [← trace_conj_sqrt_eq_trace_mul_left hA (X := (A + B + t • 1)⁻¹),
+          ← trace_conj_sqrt_eq_trace_mul_left hA (X := (A + t • 1)⁻¹)]
+        exact_mod_cast trace_conj_mono_sqrt hA hB ht)
+    (by change ((B.mat * ((A + B + t • 1)⁻¹).mat).trace : ℂ) ≤ ((B.mat * ((B + t • 1)⁻¹).mat).trace : ℂ)
+        rw [← trace_conj_sqrt_eq_trace_mul_left hB (X := (A + B + t • 1)⁻¹),
+          ← trace_conj_sqrt_eq_trace_mul_left hB (X := (B + t • 1)⁻¹)]
+        exact_mod_cast by simpa [add_comm, add_left_comm, add_assoc] using
+          trace_conj_mono_sqrt hB hA ht)
+
+private lemma trace_mul_inv_shift_eq_sum_div {A : HermitianMat d ℂ} (hA : 0 ≤ A) {t : ℝ}
+    (ht : 0 < t) :
+    (((A.mat * (A + t • 1).mat⁻¹).trace : ℂ)).re =
+      ∑ i, A.H.eigenvalues i / (A.H.eigenvalues i + t) := by
+  change (((A.mat * ((A + t • 1)⁻¹).mat).trace : ℂ)).re = _
+  rw [inv_shift_eq_cfc hA ht]
+  calc
+    (((A.mat * (A.cfc fun u => (u + t)⁻¹).mat).trace : ℂ)).re
+        = ∑ i, A.H.eigenvalues i *
+            ((A.H.eigenvalues i + t) / Complex.normSq (↑(A.H.eigenvalues i) + ↑t)) := by
+              simpa using congrArg Complex.re (HermitianMat.trace_mul_cfc A (fun u => (u + t)⁻¹))
+    _ = ∑ i, A.H.eigenvalues i * (A.H.eigenvalues i + t)⁻¹ := by
+          refine Finset.sum_congr rfl ?_
+          intro i hi
+          have hpos : 0 < A.H.eigenvalues i + t := by
+            exact add_pos_of_nonneg_of_pos (by simpa using (zero_le_iff.mp hA).eigenvalues_nonneg i) ht
+          rw [show ((↑(A.H.eigenvalues i) + ↑t : ℂ)) = ↑(A.H.eigenvalues i + t) by simp,
+            Complex.normSq_ofReal]
+          field_simp [hpos.ne']
+    _ = ∑ i, A.H.eigenvalues i / (A.H.eigenvalues i + t) := by
+          simp [div_eq_mul_inv]
+
+private lemma intervalIntegrable_weighted_trace_mul_inv_shift {A : HermitianMat d ℂ}
+    (hA : 0 ≤ A) {p T : ℝ} (hp : 0 < p) (hT : 0 < T) :
+    IntervalIntegrable
+      (fun t => t ^ (p - 1) * (((A.mat * (A + t • 1).mat⁻¹).trace : ℂ)).re)
+      volume 0 T := by
+  classical
+  have hA' := zero_le_iff.mp hA
+  let g : ℝ → ℝ := fun t =>
+    ∑ i, t ^ (p - 1) * (A.H.eigenvalues i / (A.H.eigenvalues i + t))
+  have hg : IntervalIntegrable g volume 0 T := by
+    unfold g
+    classical
+    induction (Finset.univ : Finset d) using Finset.induction_on with
+    | empty =>
+        simp
+    | @insert i s hi hs =>
+        have hi_int :
+            IntervalIntegrable
+              (fun t => t ^ (p - 1) * (A.H.eigenvalues i / (A.H.eigenvalues i + t)))
+              volume 0 T := by
+          exact intervalIntegrable_weighted_div_nonneg
+            (x := A.H.eigenvalues i) (by simpa using hA'.eigenvalues_nonneg i) hp hT
+        simpa [Finset.sum_insert hi] using hi_int.add hs
+  refine hg.congr ?_
+  intro t ht
+  have htIoc : t ∈ Set.Ioc (0 : ℝ) T := by
+    simpa [Set.uIoc_of_le hT.le] using ht
+  unfold g
+  change ∑ i, t ^ (p - 1) * (A.H.eigenvalues i / (A.H.eigenvalues i + t)) =
+    t ^ (p - 1) * (((A.mat * (A + t • 1).mat⁻¹).trace : ℂ)).re
+  rw [trace_mul_inv_shift_eq_sum_div hA htIoc.1]
+  simp [Finset.mul_sum]
+
+private lemma tendsto_intervalIntegral_weighted_trace_mul_inv_shift {A : HermitianMat d ℂ}
+    (hA : 0 ≤ A) (p : ℝ) (hp : 0 < p) (hp1 : p < 1) :
+    Filter.Tendsto
+      (fun T => ∫ t in (0)..T, t ^ (p - 1) * (((A.mat * (A + t • 1).mat⁻¹).trace : ℂ)).re)
+      Filter.atTop
+      (nhds (rpowConst p * (A ^ p).trace)) := by
+  classical
+  have hA' := zero_le_iff.mp hA
+  have hEq : ∀ᶠ T in Filter.atTop,
+      (∫ t in (0)..T, t ^ (p - 1) * (((A.mat * (A + t • 1).mat⁻¹).trace : ℂ)).re) =
+        ∑ i, ∫ t in (0)..T, t ^ (p - 1) * (A.H.eigenvalues i / (A.H.eigenvalues i + t)) := by
+    filter_upwards [Filter.eventually_gt_atTop (0 : ℝ)] with T hT
+    calc
+      (∫ t in (0)..T, t ^ (p - 1) * (((A.mat * (A + t • 1).mat⁻¹).trace : ℂ)).re)
+          = ∫ t in (0)..T, ∑ i, t ^ (p - 1) * (A.H.eigenvalues i / (A.H.eigenvalues i + t)) := by
+              apply intervalIntegral.integral_congr_ae
+              filter_upwards with t ht
+              have htIoc : t ∈ Set.Ioc (0 : ℝ) T := by
+                simpa [Set.uIoc_of_le hT.le] using ht
+              rw [trace_mul_inv_shift_eq_sum_div hA htIoc.1]
+              simp [Finset.mul_sum]
+      _ = ∑ i, ∫ t in (0)..T, t ^ (p - 1) * (A.H.eigenvalues i / (A.H.eigenvalues i + t)) := by
+            rw [intervalIntegral.integral_finset_sum]
+            intro i hi
+            exact intervalIntegrable_weighted_div_nonneg
+              (x := A.H.eigenvalues i) (by simpa using hA'.eigenvalues_nonneg i) hp hT
+  rw [Filter.tendsto_congr' hEq]
+  have hsum :
+      Filter.Tendsto
+        (fun T => ∑ i, ∫ t in (0)..T, t ^ (p - 1) * (A.H.eigenvalues i / (A.H.eigenvalues i + t)))
+        Filter.atTop
+        (nhds (∑ i, rpowConst p * (A.H.eigenvalues i) ^ p)) := by
+    refine tendsto_finset_sum Finset.univ ?_
+    intro i hi
+    exact tendsto_intervalIntegral_weighted_div_nonneg
+      (x := A.H.eigenvalues i) (by simpa using hA'.eigenvalues_nonneg i) hp hp1
+  simpa [trace_rpow_eq_sum, Finset.mul_sum] using hsum
+
 lemma trace_rpow_add_le
     {A B : HermitianMat d ℂ} (hA : 0 ≤ A) (hB : 0 ≤ B)
     (p : ℝ) (hp : 0 < p) (hp1 : p ≤ 1) :
     ((A + B) ^ p).trace ≤ (A ^ p).trace + (B ^ p).trace := by
-  sorry
+  by_cases hp_eq : p = 1; · subst hp_eq; simp
+  have hp1' : p < 1 := lt_of_le_of_ne hp1 hp_eq
+  have hlimAB := tendsto_intervalIntegral_weighted_trace_mul_inv_shift (add_nonneg hA hB) p hp hp1'
+  have hlimA := tendsto_intervalIntegral_weighted_trace_mul_inv_shift hA p hp hp1'
+  have hlimB := tendsto_intervalIntegral_weighted_trace_mul_inv_shift hB p hp hp1'
+  suffices hmono :
+      (fun T => ∫ t in (0)..T, t ^ (p - 1) * ((((A + B).mat * (A + B + t • 1).mat⁻¹).trace : ℂ)).re)
+        ≤ᶠ[Filter.atTop]
+      (fun T => (∫ t in (0)..T, t ^ (p - 1) * (((A.mat * (A + t • 1).mat⁻¹).trace : ℂ)).re) +
+          (∫ t in (0)..T, t ^ (p - 1) * (((B.mat * (B + t • 1).mat⁻¹).trace : ℂ)).re)) by
+    exact le_of_mul_le_mul_left
+      (by simpa [mul_add] using le_of_tendsto_of_tendsto hlimAB (hlimA.add hlimB) hmono)
+      (rpowConst_pos hp hp1')
+  filter_upwards [Filter.eventually_gt_atTop (0 : ℝ)] with T hT
+  rw [← intervalIntegral.integral_add
+    (intervalIntegrable_weighted_trace_mul_inv_shift hA hp hT)
+    (intervalIntegrable_weighted_trace_mul_inv_shift hB hp hT)]
+  refine intervalIntegral.integral_mono_on hT.le
+    (intervalIntegrable_weighted_trace_mul_inv_shift (add_nonneg hA hB) hp hT)
+    ((intervalIntegrable_weighted_trace_mul_inv_shift hA hp hT).add
+      (intervalIntegrable_weighted_trace_mul_inv_shift hB hp hT)) ?_
+  intro t ht
+  rcases eq_or_lt_of_le ht.1 with rfl | ht0
+  · simp [Real.zero_rpow (sub_ne_zero.mpr hp_eq)]
+  · simpa [mul_add] using mul_le_mul_of_nonneg_left
+      (show ((((A + B).mat * (A + B + t • 1).mat⁻¹).trace : ℂ)).re ≤
+          (((A.mat * (A + t • 1).mat⁻¹).trace : ℂ)).re +
+            (((B.mat * (B + t • 1).mat⁻¹).trace : ℂ)).re from by
+        simpa [Complex.add_re] using (Complex.le_def.mp (trace_mul_inv_shift_add_le hA hB ht0)).1)
+      (Real.rpow_nonneg ht0.le _)

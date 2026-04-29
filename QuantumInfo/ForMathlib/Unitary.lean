@@ -88,16 +88,10 @@ def conj_unitary_eigenvalue_equiv (U : unitary (E →ₗ[𝕜] E)) (hT : T.IsSym
   suffices ∀ (R : E →ₗ[𝕜] E) (hR : R.IsSymmetric),
       (Multiset.filter (fun x => a = hR.eigenvalues hn x) Finset.univ.val).card =
       Finset.card {i | (hR.eigenvalues hn i : 𝕜) = ↑a} from by
-    rw [this _ hS, this _ hT]
-    by_cases ha : HasEigenvalue T (↑a : 𝕜)
-    · rw [hS.card_filter_eigenvalues_eq hn (heigen _|>.mpr ha),
-          hT.card_filter_eigenvalues_eq hn ha,
-          (conj_unitary_eigenspace_equiv T U ↑a).finrank_eq]
-    · have h1 : ∀ i, hT.eigenvalues hn i ≠ a :=
-        fun i h => ha (h ▸ hT.hasEigenvalue_eigenvalues hn i)
-      have h2 : ∀ i, hS.eigenvalues hn i ≠ a :=
-        fun i h => mt (heigen _).mp ha (h ▸ hS.hasEigenvalue_eigenvalues hn i)
-      simp [h1, h2]
+    rw [this _ hS, this _ hT,
+        hS.card_filter_eigenvalues_eq hn ↑a,
+        hT.card_filter_eigenvalues_eq hn ↑a,
+        (conj_unitary_eigenspace_equiv T U ↑a).finrank_eq]
   intro R hR
   change Finset.card (Finset.univ.filter (fun x => a = hR.eigenvalues hn x)) = _
   congr 1; ext i; simp [eq_comm]

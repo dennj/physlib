@@ -7,6 +7,7 @@ module
 
 public import Mathlib.LinearAlgebra.TensorProduct.Matrix
 public import Mathlib.LinearAlgebra.PiTensorProduct
+public import Mathlib.LinearAlgebra.PiTensorProduct.Basis
 public import Mathlib.Data.Set.Card
 public import Mathlib.Algebra.Module.LinearMap.Basic
 public import QuantumInfo.ForMathlib
@@ -127,10 +128,59 @@ def of_kraus (M N : κ → Matrix B A R) : MatrixMap A B R :=
     map_smul' r x := by rw [RingHom.id_apply, Matrix.mul_smul, Matrix.smul_mul]
   }
 
-def exists_kraus (Φ : MatrixMap A B R) : ∃ r : ℕ, ∃ (M N : Fin r → Matrix B A R), Φ = of_kraus M N :=
-  sorry
-
 end kraus
+
+section kraus_exists
+
+variable [CommSemiring R] [StarRing R] [Fintype B]
+
+theorem exists_kraus (Φ : MatrixMap A B R) :
+    ∃ r : ℕ, ∃ (M N : Fin r → Matrix B A R), Φ = of_kraus M N := by
+  classical
+  let K := ((B × A) × A) × B
+  let M₀ : K → Matrix B A R := fun k =>
+    match k with
+    | (((b, a₁), a₂), b₂) => Matrix.single b a₁ (Φ (Matrix.single a₁ a₂ (1 : R)) b b₂)
+  let N₀ : K → Matrix B A R := fun k =>
+    match k with
+    | (((_, _), a₂), b₂) => Matrix.single b₂ a₂ (1 : R)
+  let e : Fin (Fintype.card K) ≃ K := (Fintype.equivFin _).symm
+  refine ⟨Fintype.card K, M₀ ∘ e, N₀ ∘ e, ?_⟩
+  apply choi_matrix_inj
+  ext ⟨j₁, i₁⟩ ⟨j₂, i₂⟩
+  simp only [choi_matrix, of_kraus, LinearMap.coe_sum, LinearMap.coe_mk, AddHom.coe_mk,
+    Finset.sum_apply]
+  have hsum_reindex :
+      (∑ x : Fin (Fintype.card K),
+          (M₀ ∘ e) x * Matrix.single i₁ i₂ (1 : R) * ((N₀ ∘ e) x).conjTranspose) j₁ j₂
+        =
+      ∑ y : K, (M₀ y * Matrix.single i₁ i₂ (1 : R) * (N₀ y).conjTranspose) j₁ j₂ := by
+    rw [Matrix.sum_apply]
+    refine Fintype.sum_equiv e
+      (fun x : Fin (Fintype.card K) =>
+        ((M₀ ∘ e) x * Matrix.single i₁ i₂ (1 : R) * ((N₀ ∘ e) x).conjTranspose) j₁ j₂)
+      (fun y : K => (M₀ y * Matrix.single i₁ i₂ (1 : R) * (N₀ y).conjTranspose) j₁ j₂)
+      ?_
+    intro x
+    simp
+  rw [hsum_reindex]
+  rw [Fintype.sum_prod_type, Fintype.sum_prod_type, Fintype.sum_prod_type]
+  simp [M₀, N₀, Matrix.mul_apply, Matrix.single, ite_and]
+  rw [Finset.sum_eq_single i₂]
+  · rw [Finset.sum_eq_single j₂]
+    · simp
+    · intro b hb hbj
+      simp [hbj, star_zero]
+    · intro h
+      exact (h.elim (by simp))
+  · intro a ha ha_ne
+    rw [Finset.sum_eq_zero]
+    intro b hb
+    simp [ha_ne, star_zero]
+  · intro h
+    exact (h.elim (by simp))
+
+end kraus_exists
 
 section submatrix
 
@@ -368,12 +418,11 @@ variable {s : ι → Type*} [∀ i, AddCommMonoid (s i)] [∀ i, Module R (s i)]
 variable {L : ι → Type* }
 
 /-- Like `Basis.tensorProduct`, but for `PiTensorProduct` -/
-noncomputable opaque _root_.Module.Basis.piTensorProduct [∀i, Fintype (L i)]
+noncomputable opaque _root_.Module.Basis.piTensorProduct [Finite ι] [∀i, Fintype (L i)]
     (b : (i:ι) → Module.Basis (L i) R (s i)) :
       Module.Basis ((i:ι) → L i) R (PiTensorProduct R s) :=
-  --Marking as opaque so that ATPs don't run into unpacking the sorried data.
-  --TODO: This is actually defined appropriately in a later Mathlib version.
-  Finsupp.basisSingleOne.map sorry
+  -- Mark as opaque so ATPs don't expand the PiTensorProduct basis implementation.
+  Basis.piTensorProduct b
 
 end basis
 
@@ -387,14 +436,45 @@ variable {dO : ι → Type w} [∀i, Fintype (dO i)] [∀i, DecidableEq (dO i)]
 noncomputable def piProd (Λi : ∀ i, MatrixMap (dI i) (dO i) R) : MatrixMap (∀i, dI i) (∀i, dO i) R :=
   let map₁ := PiTensorProduct.map Λi;
   let map₂ := LinearMap.toMatrix
-    (Module.Basis.piTensorProduct (fun i ↦ Matrix.stdBasis R (dI i) (dI i)))
-    (Module.Basis.piTensorProduct (fun i ↦ Matrix.stdBasis R (dO i) (dO i))) map₁
+    (_root_.Basis.piTensorProduct (fun i ↦ Matrix.stdBasis R (dI i) (dI i)))
+    (_root_.Basis.piTensorProduct (fun i ↦ Matrix.stdBasis R (dO i) (dO i))) map₁
   let r₁ : ((i : ι) → dO i × dO i) ≃ ((i : ι) → dO i) × ((i : ι) → dO i) := Equiv.arrowProdEquivProdArrow _ dO dO
   let r₂ : ((i : ι) → dI i × dI i) ≃ ((i : ι) → dI i) × ((i : ι) → dI i) := Equiv.arrowProdEquivProdArrow _ dI dI
   let map₃ := Matrix.reindex r₁ r₂ map₂;
   Matrix.toLin
     (Matrix.stdBasis R ((i:ι) → dI i) ((i:ι) → dI i))
     (Matrix.stdBasis R ((i:ι) → dO i) ((i:ι) → dO i)) map₃
+
+private theorem piProd_single_apply
+    (Λi : ∀ i, MatrixMap (dI i) (dO i) R)
+    (x y : ((i : ι) → dO i) × ((i : ι) → dI i)) :
+    (MatrixMap.piProd Λi) (Matrix.single x.2 y.2 1) x.1 y.1 =
+      ∏ i, (Λi i) (Matrix.single (x.2 i) (y.2 i) 1) (x.1 i) (y.1 i) := by
+  rw [MatrixMap.piProd, ← Matrix.stdBasis_eq_single (R := R) x.2 y.2]
+  rw [Matrix.toLin_self]
+  rw [Matrix.sum_apply]
+  rw [Finset.sum_eq_single (x.1, y.1)]
+  · simp [Matrix.reindex_apply, LinearMap.toMatrix_apply, Matrix.stdBasis,
+      ← Matrix.single_eq_of_single_single]
+  · intro z _ hz
+    rw [Matrix.stdBasis_eq_single]
+    simp [Matrix.single]
+    intro hz1 hz2
+    exact False.elim (hz (Prod.ext hz1 hz2))
+  · exact (by simp)
+
+theorem choi_matrix_piProd (Λi : ∀ i, MatrixMap (dI i) (dO i) R) :
+    (MatrixMap.piProd Λi).choi_matrix =
+      Matrix.reindex
+        (Equiv.arrowProdEquivProdArrow ι dO dI)
+        (Equiv.arrowProdEquivProdArrow ι dO dI)
+        (Matrix.piProd (fun i => (Λi i).choi_matrix)) := by
+  ext x y
+  simp [MatrixMap.choi_matrix, Matrix.piProd]
+  simpa using
+    (show (MatrixMap.piProd Λi) (Matrix.single x.2 y.2 1) x.1 y.1 =
+      ∏ i, (Λi i) (Matrix.single (x.2 i) (y.2 i) 1) (x.1 i) (y.1 i) from by
+        exact piProd_single_apply (Λi := Λi) (x := x) (y := y))
 
 -- notation3:100 "⨂ₜₘ "(...)", "r:(scoped f => tprod R f) => r
 -- syntax (name := bigsum) "∑ " bigOpBinders ("with " term)? ", " term:67 : term

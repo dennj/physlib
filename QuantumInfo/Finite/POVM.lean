@@ -168,10 +168,33 @@ keeping the disturbed state. -/
 noncomputable def measureForget (Λ : POVM X d) : CPTPMap d d :=
   CPTPMap.traceRight ∘ₘ Λ.measurementMap
 
-proof_wanted measureForget_eq_kraus (Λ : POVM X d) :
+theorem measureForget_eq_kraus (Λ : POVM X d) :
     Λ.measureForget = CPTPMap.of_kraus_CPTPMap (fun i ↦ (Λ.mats i) ^ (1/2 : ℝ)) (by
       simpa [-one_div, fun x ↦ HermitianMat.pow_half_mul (Λ.nonneg x), HermitianMat.ext_iff]
         using Λ.normalized
-    )
+    ) := by
+  apply CPTPMap.funext
+  intro ρ
+  apply MState.ext_m
+  rw [CPTPMap.mat_coe_eq_apply_mat (Λ := Λ.measureForget) (ρ := ρ)]
+  change Λ.measureForget.map ρ.m =
+    MatrixMap.of_kraus (fun i ↦ ((Λ.mats i) ^ (1 / 2 : ℝ)).mat)
+      (fun i ↦ ((Λ.mats i) ^ (1 / 2 : ℝ)).mat) ρ.m
+  ext i j
+  change (Matrix.traceRight (Λ.measurementMap.map ρ.m)) i j =
+    (MatrixMap.of_kraus (fun i ↦ ((Λ.mats i) ^ (1 / 2 : ℝ)).mat)
+      (fun i ↦ ((Λ.mats i) ^ (1 / 2 : ℝ)).mat) ρ.m) i j
+  rw [measurementMap_apply_matrix]
+  simp [Matrix.traceRight, MatrixMap.of_kraus]
+  rw [Matrix.sum_apply]
+  refine Finset.sum_congr rfl ?_
+  intro x hx
+  rw [Matrix.sum_apply]
+  rw [Finset.sum_eq_single x]
+  · simp [Matrix.single]
+  · intro y hy hyx
+    simp [Matrix.single, hyx]
+  · intro hx'
+    simp at hx'
 
 end POVM

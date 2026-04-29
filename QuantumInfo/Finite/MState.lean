@@ -266,7 +266,21 @@ def pure (ψ : Ket d) : MState d where
     simp [HermitianMat.trace_eq_re_trace, Matrix.trace, Matrix.vecMulVec_apply, Bra.eq_conj, h₁]
     exact ψ.normalized
 
-proof_wanted pure_inner : ⟪pure ψ, pure φ⟫_Prob = ‖Braket.dot ψ φ‖^2
+theorem pure_inner : ⟪pure ψ, pure φ⟫_Prob = ‖Braket.dot ψ φ‖^2 := by
+  simp [MState.inner_def, HermitianMat.inner_def, pure, Matrix.vecMulVec_mul_vecMulVec,
+    Braket.dot_eq_dotProduct, Matrix.trace_smul]
+  set z : ℂ := ((((ψ : Bra d) : d → ℂ)) ⬝ᵥ ((φ : d → ℂ)))
+  set w : ℂ := (((ψ : d → ℂ)) ⬝ᵥ (((φ : Bra d) : d → ℂ)))
+  have hz : z = conj w := by
+    simp only [z, w]
+    rw [show ((ψ : Bra d) : d → ℂ) = star (ψ : d → ℂ) from funext fun x => by simp [Bra.eq_conj],
+        show ((φ : Bra d) : d → ℂ) = star (φ : d → ℂ) from funext fun x => by simp [Bra.eq_conj],
+        dotProduct_comm]
+    exact Matrix.dotProduct_star ..
+  rw [show w = conj z from by rw [hz]; simp]
+  calc z.re * (conj z).re - z.im * (conj z).im
+      = Complex.normSq z := by simp [Complex.normSq_apply]
+    _ = ‖z‖ ^ 2 := Complex.normSq_eq_norm_sq z
 
 @[simp]
 theorem pure_apply {i j : d} : (pure ψ).m i j = (ψ i) * conj (ψ j) := by
